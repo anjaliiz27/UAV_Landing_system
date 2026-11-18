@@ -9,3 +9,6 @@ __pycache__/
 .vscode/
 .streamlit/secrets.toml
 /models/
+# Test masks
+src/test_masks/
+src/test_masks.zip
