@@ -31,28 +31,45 @@ _model = None
 _device = None
 
 
-def _load_model():
-    global _model, _device
-
+def _seed_hub_cache():
+    """
+    Copy weight files bundled next to this module (./weights/) into torch.hub's
+    checkpoint cache, so torch.hub finds them and skips the network download.
+    Expected files (copy them from a Colab run, see torch.hub.get_dir()/checkpoints):
+        midas_v21_small_256.pt
+        tf_efficientnet_lite3-b733e338.pth
+    Missing files are ignored: torch.hub then downloads them as usual.
+    """
+    import os
+    import shutil
     import torch
+    ckpt_dir = os.path.join(torch.hub.get_dir(), "checkpoints")
+    os.makedirs(ckpt_dir, exist_ok=True)
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "weights")
+    for name in ("midas_v21_small_256.pt", "tf_efficientnet_lite3-b733e338.pth"):
+        src, dst = os.path.join(here, name), os.path.join(ckpt_dir, name)
+        if os.path.exists(src) and not os.path.exists(dst):
+            shutil.copyfile(src, dst)
 
+
+def _load_model():
+    """Load MiDaS_small once and reuse it."""
+    global _model, _device
     if _model is None:
-        print("[MiDaS] Initializing model...", flush=True)
-
-        _device = torch.device("cpu")
-
-        print("[MiDaS] Downloading/loading MiDaS_small...", flush=True)
-
-        _model = torch.hub.load(
-    "isl-org/MiDaS",
-    "MiDaS_small"
-)
-
+        import torch
+        _seed_hub_cache()
+        _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # MiDaS loads a backbone repo internally; trust it up front so torch.hub never
+        # stops to ask a y/N question (that prompt hangs or crashes Streamlit/CI runs).
+        try:
+            torch.hub.load("rwightman/gen-efficientnet-pytorch", "tf_efficientnet_lite3",
+                           pretrained=False, trust_repo=True)
+        except Exception:
+            pass
+        _model = torch.hub.load("intel-isl/MiDaS", "MiDaS_small", trust_repo=True)
         _model.to(_device).eval()
-
-        print("[MiDaS] Model loaded successfully!", flush=True)
-
     return _model, _device
+
 
 def estimate_depth(image_rgb: np.ndarray, size: int = 256) -> np.ndarray:
     """
@@ -184,13 +201,3 @@ if __name__ == "__main__":
     for name, (x, y) in {"centre": (400, 300), "top-left": (150, 120),
                          "bottom-right": (650, 480)}.items():
         print(name, da.box_metrics(box_corners(x, y, 80, 80)))
-
-import gc
-
-def unload_model():
-    global _model
-
-    _model = None
-    gc.collect()
-
-    print("[MiDaS] Model unloaded", flush=True)
