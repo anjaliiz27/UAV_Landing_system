@@ -1,105 +1,500 @@
-import sys
-from pathlib import Path
 
-import cv2
+"""Backend for the UAV landing-site optimisation demo.
+The UI calls these functions.
+"""
+
 import numpy as np
-import matplotlib.pyplot as plt
+import cv2
 
-from candidates import generate_candidates
+from segment import predict
 from depth_module_v2 import DepthAnalysis
-from class_policy import CLASS_NAMES
+from candidates import generate_candidates
+from cost import rank_candidates
+from semantic_brain import (
+    load_active_nodes,
+    SOURCES,
+    PROPS,
+    TERRAINS,
+    E1,
+    E2,
+    _SCALE as KG_SCALE
+)
+from class_policy import allowed_classes
 
-# ---------- configuration ----------
-NAME = sys.argv[1] if len(sys.argv) > 1 else "179"     # python test_candidates.py 489
+
 W, H = 800, 600
-BOX_W, BOX_H = 60, 40
-TARGET = (400, 300)
-SHOW_PLOTS = True
+DIAG = float(np.hypot(W, H))
 
-root = Path(__file__).resolve().parent
-image_path = root / "test_images" / f"{NAME}.jpg"
-mask_path = root / "test_masks" / f"{NAME}.png"
-
-# ---------- load image ----------
-if not image_path.exists():
-    raise FileNotFoundError(f"Image not found: {image_path}")
-if not mask_path.exists():
-    raise FileNotFoundError(f"Mask not found: {mask_path}")
-
-bgr = cv2.imread(str(image_path))
-if bgr is None:
-    raise ValueError("Could not read input image.")
-img = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-img = cv2.resize(img, (W, H), interpolation=cv2.INTER_AREA)
-
-# ---------- load class-ID mask ----------
-class_map = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
-if class_map is None:
-    raise ValueError("Could not read semantic mask.")
-if class_map.ndim != 2:
-    raise ValueError("Expected a single-channel class-ID mask (use masks_800x600).")
-if class_map.shape != (H, W):
-    class_map = cv2.resize(class_map, (W, H), interpolation=cv2.INTER_NEAREST)
-class_map = class_map.astype(np.int32)
-print("Class IDs in mask:", np.unique(class_map))
-
-# ---------- depth (MiDaS runs once) ----------
-print("Running MiDaS depth analysis...")
-da = DepthAnalysis(img)
-print("Depth shape:", da.depth.shape,
-      "| grad_ref:", round(da.grad_ref, 5),
-      "| relief_ref:", round(da.relief_ref, 5))
+DEFAULTS = dict(
+    min_safe_frac=0.995,
+    stride=16,
+    max_candidates=50,
+    allow_conditional=False,
+    erode_px=15,
+    use_probs=True,
+    prob_safe_min=0.8
+)
 
 
-def show(result, mode):
-    cands = result["candidates"]
-    plt.figure(figsize=(12, 8))
-    plt.imshow(img)
-    plt.plot(*TARGET, "r*", markersize=18, label="Target")
-    for i, c in enumerate(cands[:10]):
-        poly = np.vstack([c["corners"], c["corners"][0]])
-        plt.plot(poly[:, 0], poly[:, 1], "lime" if i == 0 else "yellow", linewidth=2)
-        plt.text(c["x"], c["y"], str(i + 1), color="white",
-                 fontsize=10, ha="center", va="center")
-    tag = "conditional ON" if mode else "strict"
-    plt.title(f"Landing candidates - {NAME} ({tag})")
-    plt.legend()
-    plt.axis("off")
-    out = root / f"candidates_{NAME}_{'cond' if mode else 'strict'}.png"
-    plt.savefig(out, dpi=120, bbox_inches="tight")
-    print("Saved:", out)
+# ---------- perception (run once per image) ----------
 
+def analyze_image(image_rgb):
 
-# ---------- run both modes ----------
-for mode in (False, True):
-    print("\n" + "=" * 60)
-    print("allow_conditional =", mode)
-    result = generate_candidates(
-        class_map=class_map, target=TARGET, da=da,
-        box_w=BOX_W, box_h=BOX_H,
-        min_safe_frac=0.995, stride=16,
-        max_depth_checks=300, top_k=50,
-        nms_iou=0.0, allow_conditional=mode,
+    print("STEP 1: Resizing image...", flush=True)
+
+    img = cv2.resize(
+        image_rgb,
+        (W, H),
+        interpolation=cv2.INTER_AREA
     )
-    cands = result["candidates"]
-    print("Status:", result["status"],
-          "| valid:", len(cands),
-          "| rejected by depth:", result["n_rejected"])
 
-    for i, c in enumerate(cands[:10]):
-        top = np.argsort(c["class_hist"])[::-1][:3]
-        mix = {CLASS_NAMES[int(k)]: round(float(c["class_hist"][k]), 2)
-               for k in top if c["class_hist"][k] > 0.01}
-        print(f"  #{i + 1} centre=({c['x']},{c['y']}) angle={c['angle']:.0f} "
-              f"D={c['D']:.3f} R={c['R']:.3f} slope={c['slope']:.3f} "
-              f"cond={c['conditional_frac']:.2f} classes={mix}")
+    print("STEP 2: Starting U-Net...", flush=True)
 
-    show(result, mode)
+    pred, probs = predict(img, clean=True)
 
-# ---------- failure-case checks ----------
-bad = generate_candidates(class_map, (W + 50, H + 50), da)
-print("\nTarget outside image ->", bad["status"])
+    print("STEP 3: U-Net completed!", flush=True)
 
-if SHOW_PLOTS:
-    plt.show()
+    print("STEP 4: Starting MiDaS...", flush=True)
 
+    da = DepthAnalysis(img)
+
+    print("STEP 5: MiDaS completed!", flush=True)
+
+    print("STEP 6: Analysis completed!", flush=True)
+
+    return {
+        "image": img,
+        "pred": pred,
+        "probs": probs,
+        "da": da
+    }
+
+
+# ---------- helpers ----------
+
+def footprint_px(length_cm, width_cm, margin_cm, gsd_cm_per_px):
+    """Required landing footprint in pixels."""
+
+    w = (length_cm + 2 * margin_cm) / gsd_cm_per_px
+    h = (width_cm + 2 * margin_cm) / gsd_cm_per_px
+
+    return (
+        max(8, int(round(w))),
+        max(8, int(round(h)))
+    )
+
+
+def normalize_weights(kd, kr, ks):
+
+    t = kd + kr + ks
+
+    return (
+        (0.4, 0.2, 0.4)
+        if t <= 0
+        else (kd / t, kr / t, ks / t)
+    )
+
+
+def safe_fraction(c, allow_conditional):
+
+    return float(
+        c["class_hist"][
+            sorted(allowed_classes(allow_conditional))
+        ].sum()
+    )
+
+
+# ---------- candidate search + ranking ----------
+
+def find_candidates(analysis, target, box_px, settings):
+
+    s = {**DEFAULTS, **settings}
+
+    kw = dict(
+        box_w=box_px[0],
+        box_h=box_px[1],
+        min_safe_frac=s["min_safe_frac"],
+        stride=int(s["stride"]),
+        max_depth_checks=max(300, 3 * s["max_candidates"]),
+        top_k=int(s["max_candidates"]),
+        nms_iou=0.0,
+        allow_conditional=s["allow_conditional"],
+        erode_px=int(s["erode_px"])
+    )
+
+    if s["use_probs"]:
+        kw.update(
+            probs=analysis["probs"],
+            prob_safe_min=s["prob_safe_min"]
+        )
+
+    return generate_candidates(
+        analysis["pred"],
+        target,
+        analysis["da"],
+        **kw
+    )
+
+
+def plan_mission(
+    analysis,
+    target,
+    package,
+    weights,
+    box_px,
+    settings
+):
+
+    s = {**DEFAULTS, **settings}
+
+    res = find_candidates(
+        analysis,
+        target,
+        box_px,
+        s
+    )
+
+    kd, kr, ks = normalize_weights(*weights)
+
+    plan = dict(
+        status=res["status"],
+        n_rejected=res["n_rejected"],
+        target=tuple(target),
+        package=package,
+        box_px=box_px,
+        settings=s,
+        weights=(kd, kr, ks),
+        n_candidates=len(res["candidates"]),
+        ranked=None,
+        baseline=None,
+        active=None
+    )
+
+    if res["status"] != "ok":
+        return plan
+
+    pred = analysis["pred"]
+
+    active = load_active_nodes({"package": package})
+
+    ranked = rank_candidates(
+        res["candidates"],
+        pred,
+        active,
+        k=(kd, kr, ks)
+    )
+
+    # Terrain-only baseline: semantic weight = 0
+    kb = kd + kr
+
+    base_k = (
+        (kd / kb, kr / kb, 0.0)
+        if kb > 0
+        else (1.0, 0.0, 0.0)
+    )
+
+    baseline = rank_candidates(
+        res["candidates"],
+        pred,
+        active,
+        k=base_k
+    )
+
+    plan.update(
+        ranked=ranked,
+        baseline=baseline,
+        active=active
+    )
+
+    return plan
+
+
+# ---------- explanation ----------
+
+def explain_ranking(plan, steep_limit, n_alt=2):
+
+    ranked = plan["ranked"]["ranked"]
+
+    w = ranked[0]
+
+    tr = w["kg_trace"]
+    pen = tr["terrain_penalty"]
+
+    srcs = tr["active_sources"] or ["none"]
+
+    sf = safe_fraction(
+        w,
+        plan["settings"]["allow_conditional"]
+    )
+
+    why = [
+        f"Safe class: dominant terrain is {w['terrain']}, "
+        f"and {sf * 100:.1f}% of the footprint lies on "
+        f"classes accepted as safe.",
+
+        f"Geometry: the box lies fully inside the image, "
+        f"slope {w['slope']:.3f} (limit {steep_limit}), "
+        f"depth roughness {w['R']:.3f}.",
+
+        f"Distance: {w['D'] * DIAG:.0f} px from the target "
+        f"(normalised {w['D_norm']:.2f}), contributing "
+        f"{w['contrib']['distance']:.3f} to the cost.",
+
+        f"Semantic: active sources {srcs} activate "
+        f"{tr['property_activation'] or 'no properties'}; "
+        f"the penalty for {w['terrain']} is {w['S']:.3f}, "
+        f"contributing {w['contrib']['semantic']:.3f}.",
+
+        f"Total weighted cost {w['cost']:.3f} is the lowest "
+        f"of {len(ranked)} valid candidates."
+    ]
+
+    versus = []
+
+    for alt in ranked[1:1 + n_alt]:
+
+        d = {
+            k: alt["contrib"][k] - w["contrib"][k]
+            for k in ("distance", "roughness", "semantic")
+        }
+
+        driver = max(d, key=d.get)
+
+        t = (
+            f"#{alt['rank']} at ({alt['x']},{alt['y']}) "
+            f"on {alt['terrain']} costs {alt['cost']:.3f} "
+            f"({alt['cost'] - w['cost']:+.3f} vs winner; "
+            f"distance {d['distance']:+.3f}, "
+            f"roughness {d['roughness']:+.3f}, "
+            f"semantic {d['semantic']:+.3f}). "
+            f"Largest driver: {driver}."
+        )
+
+        if driver == "semantic":
+
+            t += (
+                f" Under {', '.join(srcs)} the KG penalty is "
+                f"{pen[alt['terrain']]:.3f} for "
+                f"{alt['terrain']} vs "
+                f"{pen[w['terrain']]:.3f} for {w['terrain']}."
+            )
+
+        elif driver == "distance":
+
+            t += (
+                f" It is {(alt['D'] - w['D']) * DIAG:.0f} "
+                f"px farther from the target."
+            )
+
+        else:
+
+            t += " Its depth roughness is higher."
+
+        versus.append(t)
+
+    return why, versus
+
+
+# ---------- package comparison ----------
+
+def compare_packages(
+    analysis,
+    target,
+    box_px,
+    settings,
+    weights,
+    scenarios
+):
+
+    s = {**DEFAULTS, **settings}
+
+    res = find_candidates(
+        analysis,
+        target,
+        box_px,
+        s
+    )
+
+    if res["status"] != "ok":
+        return dict(
+            status=res["status"],
+            rows=[],
+            baseline=None
+        )
+
+    cands = res["candidates"]
+    pred = analysis["pred"]
+
+    kd, kr, ks = normalize_weights(*weights)
+
+    rows = []
+    ref = None
+
+    for name, pkg in scenarios.items():
+
+        active = load_active_nodes({"package": pkg})
+
+        out = rank_candidates(
+            cands,
+            pred,
+            active,
+            k=(kd, kr, ks)
+        )
+
+        w = out["winner"]
+
+        pen = w["kg_trace"]["terrain_penalty"]
+
+        if ref is None:
+
+            ref = w
+            changed = "reference"
+            why = "First scenario, used as the reference."
+
+        elif (w["x"], w["y"]) == (ref["x"], ref["y"]):
+
+            changed = "no"
+
+            why = (
+                f"Same site: {w['terrain']} stays cheapest "
+                f"(penalty {pen[w['terrain']]:.3f})."
+            )
+
+        else:
+
+            changed = "yes"
+
+            why = (
+                f"Reference terrain {ref['terrain']} now has "
+                f"penalty {pen[ref['terrain']]:.3f} vs "
+                f"{pen[w['terrain']]:.3f} for {w['terrain']}; "
+                f"weighted cost {w['cost']:.3f}."
+            )
+
+        rows.append(
+            dict(
+                Scenario=name,
+                Active=", ".join(
+                    w["kg_trace"]["active_sources"]
+                ) or "none",
+                Pavement=pen["Pavement"],
+                Grass=pen["Grass"],
+                Dirt=pen["Dirt"],
+                Winner=f"({w['x']}, {w['y']})",
+                Terrain=w["terrain"],
+                Cost=round(w["cost"], 4),
+                Changed=changed,
+                Why=why,
+                _ranked=out["ranked"]
+            )
+        )
+
+    kb = kd + kr
+
+    base_k = (
+        (kd / kb, kr / kb, 0.0)
+        if kb > 0
+        else (1.0, 0.0, 0.0)
+    )
+
+    base = rank_candidates(
+        cands,
+        pred,
+        load_active_nodes({"package": {}}),
+        k=base_k
+    )
+
+    return dict(
+        status="ok",
+        rows=rows,
+        baseline=base
+    )
+
+
+# ---------- knowledge graph views ----------
+
+def kg_graph_dot(active, penalties):
+
+    srcs = [
+        s for s, v in zip(SOURCES, active)
+        if v > 0
+    ]
+
+    L = [
+        "digraph G {",
+        "rankdir=LR;",
+        'node [shape=box, style=filled, fontname="Helvetica"];'
+    ]
+
+    for s in srcs:
+        L.append(f'"{s}" [fillcolor="#f4b6b6"];')
+
+    props = set()
+
+    for (s, p), w in E1.items():
+
+        if s in srcs:
+
+            props.add(p)
+
+            L.append(
+                f'"{s}" -> "{p}" '
+                f'[label="{w:.2f}", penwidth={1 + 3 * w:.1f}];'
+            )
+
+    for p in sorted(props):
+        L.append(f'"{p}" [fillcolor="#f6e3a1"];')
+
+    for (p, t), w in E2.items():
+
+        if p in props and w > 0:
+
+            L.append(
+                f'"{p}" -> "{t}" '
+                f'[label="{w:.2f}", penwidth={1 + 3 * w:.1f}];'
+            )
+
+    for t in TERRAINS:
+
+        L.append(
+            f'"{t}" [label="{t}\\npenalty {penalties[t]:.3f}", '
+            f'fillcolor="#b6e3b6"];'
+        )
+
+    L.append("}")
+
+    return "\n".join(L)
+
+
+def kg_paths(active, terrain):
+
+    rows = []
+
+    for s, v in zip(SOURCES, active):
+
+        if v <= 0:
+            continue
+
+        for p in PROPS:
+
+            w1 = E1.get((s, p), 0.0)
+            w2 = E2.get((p, terrain), 0.0)
+
+            if w1 and w2:
+
+                rows.append(
+                    {
+                        "Path": f"{s} → {p} → {terrain}",
+                        "Edge 1": w1,
+                        "Edge 2": w2,
+                        "Contribution": round(
+                            w1 * w2 / KG_SCALE,
+                            3
+                        )
+                    }
+                )
+
+    return sorted(
+        rows,
+        key=lambda r: -r["Contribution"]
+    )
