@@ -38,36 +38,23 @@ DEFAULTS = dict(
 
 # ---------- perception (run once per image) ----------
 
+
 def analyze_image(image_rgb):
+    print("STEP 1: Resizing image", flush=True)
 
-    print("STEP 1: Resizing image...", flush=True)
+    img = cv2.resize(image_rgb, (W, H), interpolation=cv2.INTER_AREA)
 
-    img = cv2.resize(
-        image_rgb,
-        (W, H),
-        interpolation=cv2.INTER_AREA
-    )
-
-    print("STEP 2: Starting U-Net...", flush=True)
-
+    print("STEP 2: Starting U-Net", flush=True)
     pred, probs = predict(img, clean=True)
+    print("STEP 3: U-Net completed", flush=True)
 
-    print("STEP 3: U-Net completed!", flush=True)
-
-    print("STEP 4: Starting MiDaS...", flush=True)
-
+    print("STEP 4: Starting MiDaS", flush=True)
     da = DepthAnalysis(img)
+    print("STEP 5: MiDaS completed", flush=True)
 
-    print("STEP 5: MiDaS completed!", flush=True)
+    print("STEP 6: Analysis completed", flush=True)
 
-    print("STEP 6: Analysis completed!", flush=True)
-
-    return {
-        "image": img,
-        "pred": pred,
-        "probs": probs,
-        "da": da
-    }
+    return dict(image=img, pred=pred, probs=probs, da=da)
 
 
 # ---------- helpers ----------
