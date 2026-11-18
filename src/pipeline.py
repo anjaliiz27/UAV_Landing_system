@@ -18,11 +18,44 @@ DEFAULTS = dict(min_safe_frac=0.995, stride=16, max_candidates=50,
 
 
 # ---------- perception (run once per image) ----------
-def analyze_image(image_rgb):
-    img = cv2.resize(image_rgb, (W, H), interpolation=cv2.INTER_AREA)
-    pred, probs = predict(img, clean=True)
-    return dict(image=img, pred=pred, probs=probs, da=DepthAnalysis(img))
+import time
 
+def analyze_image(image_rgb):
+    start = time.time()
+
+    print("[1/4] Starting U-Net segmentation...", flush=True)
+
+    img = cv2.resize(image_rgb, (W, H), interpolation=cv2.INTER_AREA)
+
+    t = time.time()
+    pred, probs = predict(img, clean=True)
+
+    print(
+        f"[2/4] U-Net completed in {time.time()-t:.2f}s",
+        flush=True
+    )
+
+    print("[3/4] Starting MiDaS depth estimation...", flush=True)
+
+    t = time.time()
+    da = DepthAnalysis(img)
+
+    print(
+        f"[4/4] MiDaS completed in {time.time()-t:.2f}s",
+        flush=True
+    )
+
+    print(
+        f"Total perception time: {time.time()-start:.2f}s",
+        flush=True
+    )
+
+    return dict(
+        image=img,
+        pred=pred,
+        probs=probs,
+        da=da
+    )
 
 # ---------- helpers ----------
 def footprint_px(length_cm, width_cm, margin_cm, gsd_cm_per_px):

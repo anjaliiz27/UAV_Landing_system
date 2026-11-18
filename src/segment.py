@@ -31,7 +31,7 @@ def _load():
     global _model
 
     if _model is None:
-
+        print("[U-Net] Starting model loading...", flush=True)
         if not WEIGHTS.exists():
             raise FileNotFoundError(
                 f"Model weights not found: {WEIGHTS}"

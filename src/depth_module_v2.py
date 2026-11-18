@@ -34,22 +34,23 @@ _device = None
 def _load_model():
     global _model, _device
 
-    import streamlit as st
     import torch
 
-    st.write("DEBUG: Starting MiDaS model loading...")
-
     if _model is None:
+        print("[MiDaS] Initializing model...", flush=True)
+
         _device = torch.device("cpu")
 
-        st.write("DEBUG: Downloading/loading MiDaS...")
+        print("[MiDaS] Downloading/loading MiDaS_small...", flush=True)
+
         _model = torch.hub.load(
             "intel-isl/MiDaS",
             "MiDaS_small"
         )
 
-        st.write("DEBUG: MiDaS loaded successfully!")
         _model.to(_device).eval()
+
+        print("[MiDaS] Model loaded successfully!", flush=True)
 
     return _model, _device
 
