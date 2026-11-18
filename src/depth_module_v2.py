@@ -44,9 +44,9 @@ def _load_model():
         print("[MiDaS] Downloading/loading MiDaS_small...", flush=True)
 
         _model = torch.hub.load(
-            "intel-isl/MiDaS",
-            "MiDaS_small"
-        )
+    "isl-org/MiDaS",
+    "MiDaS_small"
+)
 
         _model.to(_device).eval()
 
