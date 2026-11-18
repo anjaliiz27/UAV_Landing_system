@@ -184,3 +184,13 @@ if __name__ == "__main__":
     for name, (x, y) in {"centre": (400, 300), "top-left": (150, 120),
                          "bottom-right": (650, 480)}.items():
         print(name, da.box_metrics(box_corners(x, y, 80, 80)))
+
+import gc
+
+def unload_model():
+    global _model
+
+    _model = None
+    gc.collect()
+
+    print("[MiDaS] Model unloaded", flush=True)

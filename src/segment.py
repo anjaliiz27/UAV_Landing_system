@@ -127,3 +127,12 @@ def predict(image_rgb, clean=True, ksize=5):
         class_map.astype(np.int32),
         probabilities.cpu().numpy()
     )
+import gc
+
+def unload_model():
+    global _model
+
+    _model = None
+    gc.collect()
+
+    print("[U-Net] Model unloaded", flush=True)
