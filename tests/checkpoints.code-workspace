@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "../checkpoints"
+		},
+		{
+			"path": "../models"
+		},
+		{
+			"path": "../src"
+		},
+		{
+			"path": "."
+		}
+	],
+	"settings": {}
+}

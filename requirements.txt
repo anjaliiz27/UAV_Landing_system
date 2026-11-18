@@ -1,0 +1,12 @@
+streamlit
+streamlit-image-coordinates
+torch
+torchvision
+numpy
+opencv-python-headless
+Pillow
+matplotlib
+scipy
+segmentation-models-pytorch
+timm
+pytest
