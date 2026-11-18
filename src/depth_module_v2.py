@@ -32,15 +32,26 @@ _device = None
 
 
 def _load_model():
-    """Load MiDaS_small once and reuse it."""
     global _model, _device
-    if _model is None:
-        import torch
-        _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        _model = torch.hub.load("intel-isl/MiDaS", "MiDaS_small")
-        _model.to(_device).eval()
-    return _model, _device
 
+    import streamlit as st
+    import torch
+
+    st.write("DEBUG: Starting MiDaS model loading...")
+
+    if _model is None:
+        _device = torch.device("cpu")
+
+        st.write("DEBUG: Downloading/loading MiDaS...")
+        _model = torch.hub.load(
+            "intel-isl/MiDaS",
+            "MiDaS_small"
+        )
+
+        st.write("DEBUG: MiDaS loaded successfully!")
+        _model.to(_device).eval()
+
+    return _model, _device
 
 def estimate_depth(image_rgb: np.ndarray, size: int = 256) -> np.ndarray:
     """
