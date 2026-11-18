@@ -234,7 +234,13 @@ else:
     st.info("Upload an aerial image to start.")
     st.stop()
 
-A = get_analysis(data)
+try:
+    with st.spinner("Loading U-Net and MiDaS. Please wait..."):
+        A = get_analysis(data)
+except Exception as e:
+    st.error("Image analysis failed.")
+    st.exception(e)
+    st.stop()
 
 st.sidebar.subheader("Package")
 
